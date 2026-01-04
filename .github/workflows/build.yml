@@ -1,0 +1,231 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install nuitka
+
+    - name: Build with Nuitka
+      run: |
+        python -m nuitka `
+          --standalone `
+          --onefile `
+          --enable-plugin=pyside6 `
+          --windows-console-mode=disable `
+          --windows-company-name="Viable" `
+          --windows-product-name="Layer Monitor" `
+          --windows-file-version=1.0.0.0 `
+          --windows-product-version=1.0.0.0 `
+          --windows-file-description="Layer Monitor for Viable Keyboards" `
+          --output-dir=dist `
+          --output-filename=LayerMonitor.exe `
+          --assume-yes-for-downloads `
+          src/main/python/main.py
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LayerMonitor-Windows
+        path: dist/LayerMonitor.exe
+
+  build-macos:
+    runs-on: macos-14  # Apple Silicon
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install nuitka
+
+    - name: Build with Nuitka
+      run: |
+        python -m nuitka \
+          --standalone \
+          --onefile \
+          --enable-plugin=pyside6 \
+          --macos-create-app-bundle \
+          --macos-app-name=LayerMonitor \
+          --output-dir=dist \
+          --assume-yes-for-downloads \
+          src/main/python/main.py
+
+    - name: Create Info.plist (hide from dock)
+      run: |
+        cat > dist/main.app/Contents/Info.plist << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>main</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.viable.layermonitor</string>
+            <key>CFBundleName</key>
+            <string>LayerMonitor</string>
+            <key>CFBundleDisplayName</key>
+            <string>Layer Monitor</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>LSUIElement</key>
+            <true/>
+        </dict>
+        </plist>
+        EOF
+
+    - name: Rename app bundle
+      run: mv dist/main.app dist/LayerMonitor.app
+
+    - name: Create DMG
+      run: |
+        mkdir -p dmg-staging
+        cp -R dist/LayerMonitor.app dmg-staging/
+        ln -s /Applications dmg-staging/Applications
+        hdiutil create -volname "Layer Monitor" -srcfolder dmg-staging -ov -format UDZO LayerMonitor-macOS.dmg
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LayerMonitor-macOS
+        path: LayerMonitor-macOS.dmg
+
+  build-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libusb-1.0-0-dev libudev-dev patchelf libfuse2
+
+    - name: Install AppImage tools and xcb dependencies
+      run: |
+        sudo apt-get install -y \
+          libxcb-cursor0 libxcb-icccm4 libxcb-util1 libxcb-image0 \
+          libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-render0 \
+          libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
+          libxcb1 libxcb-glx0 libxkbcommon0 libxkbcommon-x11-0 \
+          libx11-6 libx11-xcb1 libxau6 libxdmcp6 \
+          libglib2.0-0 libegl1 libgl1 zlib1g libbsd0
+        wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool
+        ./appimagetool --appimage-extract
+        sudo mv squashfs-root /opt/appimagetool
+        sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install nuitka
+
+    - name: Build with Nuitka
+      run: |
+        python -m nuitka \
+          --standalone \
+          --enable-plugin=pyside6 \
+          --output-dir=dist \
+          --output-filename=LayerMonitor \
+          --assume-yes-for-downloads \
+          src/main/python/main.py
+
+    - name: Create AppImage
+      run: |
+        APPDIR=LayerMonitor.AppDir
+        mkdir -p $APPDIR/usr/bin
+        mkdir -p $APPDIR/usr/lib
+        mkdir -p $APPDIR/usr/share/applications
+
+        # Copy Nuitka output
+        cp -a dist/main.dist/* $APPDIR/usr/bin/
+
+        # Bundle system libraries for portability
+        copy_lib() {
+          local lib="$1"
+          for path in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+            if [ -f "$path/$lib" ]; then
+              cp -L "$path/$lib" "$APPDIR/usr/lib/"
+              return 0
+            fi
+          done
+          return 1
+        }
+
+        # XCB and X11 libraries
+        for lib in libxcb-cursor.so.0 libxcb-icccm.so.4 libxcb-util.so.1 \
+                   libxcb-image.so.0 libxcb-keysyms.so.1 libxcb-randr.so.0 \
+                   libxcb-render-util.so.0 libxcb-render.so.0 libxcb-shape.so.0 \
+                   libxcb-shm.so.0 libxcb-sync.so.1 libxcb-xfixes.so.0 \
+                   libxcb-xkb.so.1 libxcb.so.1 libxcb-glx.so.0 \
+                   libxkbcommon.so.0 libxkbcommon-x11.so.0 \
+                   libX11.so.6 libX11-xcb.so.1 libXau.so.6 libXdmcp.so.6; do
+          copy_lib "$lib"
+        done
+
+        # Additional required libraries
+        for lib in libzstd.so.1 libz.so.1 libbsd.so.0 libmd.so.0; do
+          copy_lib "$lib"
+        done
+
+        cat > $APPDIR/layermonitor.desktop << 'EOF'
+        [Desktop Entry]
+        Type=Application
+        Name=Layer Monitor
+        Comment=System tray layer monitor for Viable keyboards
+        Exec=LayerMonitor
+        Categories=Utility;Settings;HardwareSettings;
+        EOF
+        sed -i 's/^        //' $APPDIR/layermonitor.desktop
+        cp $APPDIR/layermonitor.desktop $APPDIR/usr/share/applications/
+
+        cat > $APPDIR/AppRun << 'EOF'
+        #!/bin/sh
+        HERE=$(dirname $(readlink -f "${0}"))
+        export LD_LIBRARY_PATH="${HERE}/usr/lib:${HERE}/usr/bin:${LD_LIBRARY_PATH}"
+        export QT_QPA_PLATFORM=xcb
+        exec "${HERE}/usr/bin/LayerMonitor" "$@"
+        EOF
+        sed -i 's/^        //' $APPDIR/AppRun
+        chmod +x $APPDIR/AppRun
+
+        # Create a simple icon (required for AppImage)
+        convert -size 256x256 xc:green -fill white -gravity center -pointsize 72 -annotate 0 "LM" $APPDIR/layermonitor.png || \
+          echo "No ImageMagick, creating placeholder" && touch $APPDIR/layermonitor.png
+
+        ARCH=x86_64 appimagetool $APPDIR LayerMonitor-x86_64.AppImage
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LayerMonitor-Linux
+        path: LayerMonitor-x86_64.AppImage
