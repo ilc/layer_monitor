@@ -197,13 +197,17 @@ jobs:
           copy_lib "$lib"
         done
 
+        # Create a simple icon (required for AppImage) - solid green square
+        convert -size 256x256 xc:green $APPDIR/layermonitor.png
+
         cat > $APPDIR/layermonitor.desktop << 'EOF'
         [Desktop Entry]
         Type=Application
         Name=Layer Monitor
         Comment=System tray layer monitor for Viable keyboards
         Exec=LayerMonitor
-        Categories=Utility;Settings;HardwareSettings;
+        Icon=layermonitor
+        Categories=Utility;
         EOF
         sed -i 's/^        //' $APPDIR/layermonitor.desktop
         cp $APPDIR/layermonitor.desktop $APPDIR/usr/share/applications/
@@ -217,10 +221,6 @@ jobs:
         EOF
         sed -i 's/^        //' $APPDIR/AppRun
         chmod +x $APPDIR/AppRun
-
-        # Create a simple icon (required for AppImage)
-        convert -size 256x256 xc:green -fill white -gravity center -pointsize 72 -annotate 0 "LM" $APPDIR/layermonitor.png || \
-          echo "No ImageMagick, creating placeholder" && touch $APPDIR/layermonitor.png
 
         ARCH=x86_64 appimagetool $APPDIR LayerMonitor-x86_64.AppImage
 
