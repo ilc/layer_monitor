@@ -19,12 +19,9 @@ from protocol.constants import (
     VIABLE_DEFINITION_SIZE,
     VIABLE_DEFINITION_CHUNK,
     VIABLE_DEFINITION_CHUNK_SIZE,
+    VIABLE_LAYER_STATE_GET,
+    VIABLE_LAYER_STATE_SET,
 )
-
-# VIA custom value IDs for Svalboard
-SVAL_ID_LAYER0_COLOR = 32
-SVAL_ID_CURRENT_LAYER = 48
-
 
 class Keyboard:
     """Simplified keyboard class for layer monitoring."""
@@ -34,9 +31,10 @@ class Keyboard:
         self.wrapper = ClientWrapper(dev)
         self.definition = None
         self.is_svalboard = False
-        self.sval_layer_colors = None
+        self.layer_colors = None
         self.layers = 0
         self.viable_protocol = None
+        self._menu_ids = {}  # Maps semantic ID to numeric ID
 
     def reload(self):
         """Load keyboard information."""
@@ -90,30 +88,65 @@ class Keyboard:
         self.layers = data[1]
         logging.debug("Layer count: %d", self.layers)
 
+    def _extract_menu_ids(self, items):
+        """Recursively extract semantic IDs from menu structure."""
+        for item in items:
+            if isinstance(item, dict):
+                # Check if this item has a content array with ID info
+                content = item.get('content')
+                if isinstance(content, list) and len(content) >= 3:
+                    # Format: ["semantic_id", channel, numeric_id]
+                    if isinstance(content[0], str) and isinstance(content[2], int):
+                        self._menu_ids[content[0]] = content[2]
+                elif isinstance(content, list):
+                    # Nested content, recurse
+                    self._extract_menu_ids(content)
+
     def _reload_svalboard(self):
-        """Check if this is a Svalboard and load layer colors."""
+        """Load layer colors from definition if available."""
         self.is_svalboard = False
-        self.sval_layer_colors = None
+        self.layer_colors = None
+        self._menu_ids = {}
 
         if not self.definition:
             return
 
         name = self.definition.get('name', '')
-        if not name.lower().startswith('svalboard'):
+        if name.lower().startswith('svalboard'):
+            self.is_svalboard = True
+            logging.debug("Detected Svalboard")
+
+        # Extract semantic IDs from menus for any Viable keyboard
+        menus = self.definition.get('menus', [])
+        for menu in menus:
+            content = menu.get('content', [])
+            self._extract_menu_ids(content)
+
+        logging.debug("Extracted menu IDs: %s", self._menu_ids)
+
+        # Check if layer color IDs are defined
+        if 'id_layer0_color' not in self._menu_ids:
+            logging.debug("No layer color IDs in definition")
             return
 
-        self.is_svalboard = True
-        logging.debug("Detected Svalboard")
-
-        # Load layer colors
-        self.sval_layer_colors = []
+        # Load layer colors using semantic IDs from definition
+        self.layer_colors = []
         for layer in range(min(self.layers, 16)):
-            data = self._via_get_value(SVAL_ID_LAYER0_COLOR + layer)
-            if data is None:
+            semantic_id = f"id_layer{layer}_color"
+            numeric_id = self._menu_ids.get(semantic_id)
+            if numeric_id is None:
+                logging.debug("No ID found for %s, using default", semantic_id)
                 default_hue = (layer * 20) % 256
-                self.sval_layer_colors.append((default_hue, 255))
+                self.layer_colors.append((default_hue, 255))
             else:
-                self.sval_layer_colors.append((data[0], data[1]))
+                data = self._via_get_value(numeric_id)
+                if data is None:
+                    default_hue = (layer * 20) % 256
+                    self.layer_colors.append((default_hue, 255))
+                else:
+                    self.layer_colors.append((data[0], data[1]))
+
+        logging.debug("Loaded %d layer colors", len(self.layer_colors))
 
     def _via_get_value(self, value_id):
         """Get a custom keyboard value via VIA protocol."""
@@ -126,13 +159,44 @@ class Keyboard:
         return data[3:]
 
     def get_current_layer(self):
-        """Get the currently active layer from the keyboard."""
-        if not self.is_svalboard:
+        """Get the currently active layer from the keyboard.
+
+        Returns the highest active layer from the 32-bit layer state mask.
+        Uses the Viable protocol layer_state_get command.
+        """
+        if not self.viable_protocol:
             return None
         try:
-            data = self._via_get_value(SVAL_ID_CURRENT_LAYER)
-            if data:
-                return data[0]
+            data = self.wrapper.send_viable(
+                struct.pack("B", VIABLE_LAYER_STATE_GET),
+                retries=5
+            )
+            if data[0] == VIABLE_PREFIX and data[1] == VIABLE_LAYER_STATE_GET:
+                # Parse 32-bit little-endian layer state mask from data[2:6]
+                layer_mask = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
+                # Return highest active layer
+                if layer_mask == 0:
+                    return 0
+                return (layer_mask.bit_length() - 1)
+        except Exception:
+            pass
+        return None
+
+    def get_layer_state(self):
+        """Get the full 32-bit layer state mask from the keyboard.
+
+        Uses the Viable protocol layer_state_get command.
+        """
+        if not self.viable_protocol:
+            return None
+        try:
+            data = self.wrapper.send_viable(
+                struct.pack("B", VIABLE_LAYER_STATE_GET),
+                retries=5
+            )
+            if data[0] == VIABLE_PREFIX and data[1] == VIABLE_LAYER_STATE_GET:
+                # Parse 32-bit little-endian layer state mask from data[2:6]
+                return data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
         except Exception:
             pass
         return None

@@ -88,8 +88,8 @@ class KeyboardDevice:
 
     def get_layer_colors(self):
         """Get layer colors if available."""
-        if self.keyboard and self.keyboard.sval_layer_colors:
-            return self.keyboard.sval_layer_colors
+        if self.keyboard and self.keyboard.layer_colors:
+            return self.keyboard.layer_colors
         return None
 
     def title(self):
