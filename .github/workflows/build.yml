@@ -23,6 +23,15 @@ jobs:
         pip install -r requirements.txt
         pip install nuitka
 
+    - name: Generate icon
+      run: |
+        python -c "
+        from build import create_windows_ico
+        import os
+        os.makedirs('dist', exist_ok=True)
+        create_windows_ico('dist/AppIcon.ico')
+        "
+
     - name: Build with Nuitka
       run: |
         python -m nuitka `
@@ -30,6 +39,7 @@ jobs:
           --onefile `
           --enable-plugin=pyside6 `
           --windows-console-mode=disable `
+          --windows-icon-from-ico=dist/AppIcon.ico `
           --windows-company-name="Viable" `
           --windows-product-name="Layer Monitor" `
           --windows-file-version=1.0.0.0 `
@@ -74,7 +84,7 @@ jobs:
           --assume-yes-for-downloads \
           src/main/python/main.py
 
-    - name: Create Info.plist (hide from dock)
+    - name: Create Info.plist and icon
       run: |
         cat > dist/main.app/Contents/Info.plist << 'EOF'
         <?xml version="1.0" encoding="UTF-8"?>
@@ -91,11 +101,18 @@ jobs:
             <string>Layer Monitor</string>
             <key>CFBundleVersion</key>
             <string>1.0.0</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
             <key>LSUIElement</key>
             <true/>
         </dict>
         </plist>
         EOF
+        mkdir -p dist/main.app/Contents/Resources
+        python -c "
+        from build import create_macos_icns
+        create_macos_icns('dist/main.app/Contents/Resources/AppIcon.icns')
+        "
 
     - name: Rename app bundle
       run: mv dist/main.app dist/LayerMonitor.app
@@ -197,8 +214,11 @@ jobs:
           copy_lib "$lib"
         done
 
-        # Create a simple icon (required for AppImage) - solid green square
-        convert -size 256x256 xc:green $APPDIR/layermonitor.png
+        # Create icon with "0" indicator
+        python -c "
+        from build import create_linux_png
+        create_linux_png('LayerMonitor.AppDir/layermonitor.png')
+        "
 
         cat > $APPDIR/layermonitor.desktop << 'EOF'
         [Desktop Entry]
