@@ -126,11 +126,17 @@ def create_windows_ico(output_path):
             png_path = os.path.join(tmpdir, f'icon_{size}.png')
             create_icon_png(size, png_path)
             img = Image.open(png_path)
+            img.load()  # Force load into memory so file can be closed
             images.append(img)
 
         # Save as ICO with multiple sizes
         images[0].save(output_path, format='ICO', sizes=[(s, s) for s in sizes],
                        append_images=images[1:])
+
+        # Close all images to release file handles (needed on Windows)
+        for img in images:
+            img.close()
+
         print(f"Created {output_path}")
 
 
